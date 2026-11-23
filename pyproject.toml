@@ -13,9 +13,9 @@ dependencies = [
 
 [project.optional-dependencies]
 app = ["streamlit==1.67.0", "pillow==13.0.0"]
-data = ["pandas==3.1.1", "pyarrow==25.0.1"]
+data = ["pandas==3.1.1", "pyarrow==26.0.1"]
 e2e = ["playwright==1.63.0"]  # the browser checks: also run `playwright install chromium`
-dev = ["pytest==9.1.1", "streamlit==1.67.0", "pillow==13.0.0", "pandas==3.1.1", "pyarrow==25.0.1", "cfn-lint==1.61.0", "ruff==0.17.4"]
+dev = ["pytest==9.1.1", "streamlit==1.67.0", "pillow==13.0.0", "pandas==3.1.1", "pyarrow==26.0.1", "cfn-lint==1.61.0", "ruff==0.17.4"]
 
 [tool.ruff]
 line-length = 120
