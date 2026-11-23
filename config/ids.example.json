@@ -1,0 +1,11 @@
+{
+  "products_index": "sample-agent-ret-products",
+  "hybrid_pipeline": "sample-agent-ret-hybrid",
+  "hybrid_rerank_pipeline": "sample-agent-ret-hybrid-rerank",
+  "embedding_model_id": "<set by infra/serverless/deploy_objects.py>",
+  "rerank_model_id": "<set by infra/serverless/deploy_objects.py>",
+  "space_id": "<set by infra/serverless/deploy_agentcore.py>",
+  "memory_region": "us-east-1",
+  "agent_runtime_arn": "<set by infra/serverless/deploy_agentcore.py>",
+  "catalog_gateway_url": "<set by infra/serverless/deploy_agentcore.py>"
+}

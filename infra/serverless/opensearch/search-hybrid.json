@@ -1,0 +1,22 @@
+{
+  "description": "project: @@PREFIX@@ - hybrid lexical + semantic, min-max normalized: weights keyword 0.3, text vector 0.65, picture vector 0.05",
+  "phase_results_processors": [
+    {
+      "normalization-processor": {
+        "combination": {
+          "parameters": {
+            "weights": [
+              0.3,
+              0.65,
+              0.05
+            ]
+          },
+          "technique": "arithmetic_mean"
+        },
+        "normalization": {
+          "technique": "min_max"
+        }
+      }
+    }
+  ]
+}

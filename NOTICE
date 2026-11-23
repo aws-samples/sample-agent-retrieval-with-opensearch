@@ -1,1 +1,32 @@
+Sample: agent retrieval with Amazon OpenSearch Serverless
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+This project is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+----------------------------------------------------------------------
+
+This project downloads and derives data from the Amazon Shopping Queries
+(ESCI) dataset, which is NOT distributed with this repository:
+
+  Shopping Queries Dataset: A Large-Scale ESCI Benchmark for Improving
+  Product Search
+  https://github.com/amazon-science/esci-data
+  Licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0)
+
+  Citation:
+  Reddy, C. K., Marquez, L., Valero, F., Rao, N., Zaragoza, H.,
+  Bandyopadhyay, S., Biswas, A., Xing, A., Subbian, K. (2022).
+  Shopping Queries Dataset: A Large-Scale ESCI Benchmark for Improving
+  Product Search. arXiv:2206.06588.
+
+Derived artifacts in this project (the loaded product catalog, judgment
+files such as data/esci_*.json, and the published evaluation results in
+docs/results/) are derived from that dataset and carry the same
+Apache-2.0 attribution. Prices and stock values are synthetic and are
+not part of the original dataset.
+
+The product pictures in assets/products/ were generated for this sample with
+Stability AI Stable Image Core on Amazon Bedrock, from product titles. They
+are illustrations, not photographs of the products. Check the terms for
+generated output (see docs/generative-ai.md).

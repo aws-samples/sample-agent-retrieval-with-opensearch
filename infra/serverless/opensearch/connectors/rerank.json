@@ -1,0 +1,29 @@
+{
+  "name": "@@PREFIX@@-rerank",
+  "version": "2",
+  "description": "project: @@PREFIX@@ - Bedrock Rerank API (cross-Region)",
+  "protocol": "aws_sigv4",
+  "parameters": {
+    "endpoint": "bedrock-agent-runtime",
+    "model_name": "@@RERANK_MODEL_ARN@@",
+    "service_name": "bedrock",
+    "api_name": "rerank",
+    "region": "@@RERANK_REGION@@"
+  },
+  "actions": [
+    {
+      "action_type": "PREDICT",
+      "method": "POST",
+      "url": "https://${parameters.endpoint}.${parameters.region}.amazonaws.com/${parameters.api_name}",
+      "headers": {
+        "content-type": "application/json"
+      },
+      "request_body": "{ \"queries\": ${parameters.queries}, \"rerankingConfiguration\": { \"type\": \"BEDROCK_RERANKING_MODEL\", \"bedrockRerankingConfiguration\": { \"modelConfiguration\": { \"modelArn\": \"${parameters.model_name}\" }, \"numberOfResults\": ${parameters.numberOfResults} } }, \"sources\": ${parameters.sources} }",
+      "pre_process_function": "connector.pre_process.bedrock.rerank",
+      "post_process_function": "connector.post_process.bedrock.rerank"
+    }
+  ],
+  "credential": {
+    "roleArn": "@@ROLE_ARN@@"
+  }
+}

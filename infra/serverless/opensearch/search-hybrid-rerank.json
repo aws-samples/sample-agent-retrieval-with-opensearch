@@ -1,0 +1,36 @@
+{
+  "description": "project: @@PREFIX@@ - hybrid (min_max 0.3 keyword / 0.65 text vector / 0.05 picture vector) + Bedrock rerank over title",
+  "phase_results_processors": [
+    {
+      "normalization-processor": {
+        "combination": {
+          "parameters": {
+            "weights": [
+              0.3,
+              0.65,
+              0.05
+            ]
+          },
+          "technique": "arithmetic_mean"
+        },
+        "normalization": {
+          "technique": "min_max"
+        }
+      }
+    }
+  ],
+  "response_processors": [
+    {
+      "rerank": {
+        "ml_opensearch": {
+          "model_id": "@@RERANK_MODEL_ID@@"
+        },
+        "context": {
+          "document_fields": [
+            "title"
+          ]
+        }
+      }
+    }
+  ]
+}

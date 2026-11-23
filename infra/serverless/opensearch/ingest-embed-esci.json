@@ -1,0 +1,13 @@
+{
+  "description": "project: @@PREFIX@@ - embed_text (title + bullet points, built by the loader) with Titan v2 1024",
+  "processors": [
+    {
+      "text_embedding": {
+        "model_id": "@@EMBEDDING_MODEL_ID@@",
+        "field_map": {
+          "embed_text": "embedding"
+        }
+      }
+    }
+  ]
+}

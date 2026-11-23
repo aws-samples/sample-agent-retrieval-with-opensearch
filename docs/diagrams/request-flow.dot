@@ -1,0 +1,17 @@
+// One agent turn with memory (version v3). Rebuild with: python scripts/build_diagrams.py
+digraph request_flow {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=12, nodesep=0.45, ranksep=0.4, pad=0.3, splines=true];
+  node  [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#5f6b7a", fontname="Helvetica", fontsize=11, margin="0.18,0.1"];
+  edge  [color="#5f6b7a", fontname="Helvetica", fontsize=9, arrowsize=0.7];
+
+  q   [label="1. The shopper asks a question", fillcolor="#f2f3f3"];
+  rec [label="2. The app recalls this shopper's facts\nOpenSearch Memory: SearchMemories (match + neural)\nactorId is set by the app, never by the model", fillcolor="#ffe6d9", color="#ec7211"];
+  run [label="3. The app invokes the agent on AgentCore Runtime\nwith the question and the recalled facts (marked as data)", fillcolor="#ffe6d9", color="#ec7211"];
+  srch [label="4. The agent calls run_product_search\nthe runtime builds the hybrid query in code\nBM25 + k-NN, price filter inside, optional rerank", fillcolor="#dbeafe", color="#0972d3"];
+  ans [label="5. The agent writes the answer from the documents it found", fillcolor="#ffe6d9", color="#ec7211"];
+  sto [label="6. The app stores the exchange\nCreateEvent, and the budget as its own memory", fillcolor="#ffe6d9", color="#ec7211"];
+  ext [label="7. After about 10 s of quiet, OpenSearch Memory\nextracts and consolidates the facts", fillcolor="#ffffff", style="rounded,dashed"];
+  nxt [label="Next turn: the new fact is recalled (about 20 s later)", fillcolor="#f2f3f3"];
+
+  q -> rec -> run -> srch -> ans -> sto -> ext -> nxt;
+}

@@ -1,0 +1,885 @@
+{
+  "schema": 1,
+  "applicationInfo": {
+    "name": "Sample retail agent demo",
+    "description": "Sample content: an agent that searches a public product catalog on OpenSearch, with per-shopper memory. Non-production, no customer data."
+  },
+  "architecture": {
+    "description": "See docs/architecture.md: Streamlit app on EC2 (SSM only), AgentCore runtime in a VPC, OpenSearch Serverless collection or domain, Bedrock, two Gateways, Cognito."
+  },
+  "dataflow": {
+    "description": "See 'Trust boundaries and data flows' in docs/threat-model.md (flows 1 to 5, 3a)."
+  },
+  "assumptions": [
+    {
+      "id": "a1",
+      "numericId": 1,
+      "content": "The EC2 host has no inbound security group rules and is reached only through SSM Session Manager."
+    },
+    {
+      "id": "a2",
+      "numericId": 2,
+      "content": "The account is a non-production sandbox; whoever administers it can already read every secret and package in it."
+    },
+    {
+      "id": "a3",
+      "numericId": 3,
+      "content": "Account budget alarms are set by the operator."
+    },
+    {
+      "id": "a4",
+      "numericId": 4,
+      "content": "The demo has no real sign-in; the shopper is chosen in the UI."
+    }
+  ],
+  "assumptionLinks": [
+    {
+      "assumptionId": "a1",
+      "linkedId": "t12",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a2",
+      "linkedId": "t8",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a2",
+      "linkedId": "t11",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a2",
+      "linkedId": "t14",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a2",
+      "linkedId": "t15",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a3",
+      "linkedId": "t10",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a4",
+      "linkedId": "t3",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a4",
+      "linkedId": "t9",
+      "type": "Threat"
+    },
+    {
+      "assumptionId": "a4",
+      "linkedId": "t16",
+      "type": "Threat"
+    }
+  ],
+  "threats": [
+    {
+      "id": "t1",
+      "numericId": 1,
+      "status": "threatIdentified",
+      "statement": "An outside caller who can reach the public catalog Gateway URL can bring about this: someone calls the catalog Gateway without credentials. That lets them read the product catalog or run searches at our cost, resulting in reduced confidentiality and availability of Product catalog.",
+      "threatSource": "An outside caller",
+      "prerequisites": "who can reach the public catalog Gateway URL",
+      "threatAction": "Someone calls the catalog Gateway without credentials",
+      "threatImpact": "lets them read the product catalog or run searches at our cost",
+      "impactedGoal": [
+        "confidentiality and availability"
+      ],
+      "impactedAssets": [
+        "Product catalog"
+      ],
+      "displayOrder": 1,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "1a. Residual: A stolen token works for up to 24 hours; there is no revocation step. Evidence: `agentcore.yaml:173,229-257,267-271`"
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "numericId": 2,
+      "status": "threatIdentified",
+      "statement": "An outside caller who can reach the public inventory Gateway URL can bring about this: someone calls the inventory Gateway without credentials. That lets them read stock data and uses the inventory tool, resulting in reduced confidentiality of Inventory bearer token and Cognito client secret.",
+      "threatSource": "An outside caller",
+      "prerequisites": "who can reach the public inventory Gateway URL",
+      "threatAction": "Someone calls the inventory Gateway without credentials",
+      "threatImpact": "lets them read stock data and uses the inventory tool",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Inventory bearer token and Cognito client secret"
+      ],
+      "displayOrder": 2,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "1b. Residual: The client secret does not expire and is rotated only by replacing the Cognito app client. Evidence: `inventory-gateway.yaml:44-56,252-257`; `agentcore.yaml:408-416`"
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "numericId": 3,
+      "status": "threatIdentified",
+      "statement": "A shopper who can pick another shopper in the demo UI can bring about this: a shopper acts as another shopper to read memory. That lets them read another shopper's preferences and facts, resulting in reduced confidentiality of Per-shopper memory.",
+      "threatSource": "A shopper",
+      "prerequisites": "who can pick another shopper in the demo UI",
+      "threatAction": "A shopper acts as another shopper to read memory",
+      "threatImpact": "lets them read another shopper's preferences and facts",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Per-shopper memory"
+      ],
+      "displayOrder": 3,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "2. Residual: The demo has no real sign-in; the shopper is picked in the UI. Evidence: `app.py` (memory calls)"
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "numericId": 4,
+      "status": "threatIdentified",
+      "statement": "An author of product text or a user who can put text in front of the model can bring about this: prompt injection in product text or the user prompt makes the agent misuse tools. That makes the agent recommend or call tools wrongly, resulting in reduced integrity of Product catalog, Model invocations.",
+      "threatSource": "An author of product text or a user",
+      "prerequisites": "who can put text in front of the model",
+      "threatAction": "Prompt injection in product text or the user prompt makes the agent misuse tools",
+      "threatImpact": "makes the agent recommend or call tools wrongly",
+      "impactedGoal": [
+        "integrity"
+      ],
+      "impactedAssets": [
+        "Product catalog",
+        "Model invocations"
+      ],
+      "displayOrder": 4,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "3. Residual: A recommendation can still be skewed by hostile catalog text (public sample data that we load). No Bedrock Guardrail is attached to the demo agent; add one before any wider use. Recalled memory is passed as delimited data with a preamble, which lowers the risk but is not a control. Evidence: `search_lambda.py`; `main.py`; `docs/limitations.md`"
+        }
+      ]
+    },
+    {
+      "id": "t5",
+      "numericId": 5,
+      "status": "threatIdentified",
+      "statement": "A shopper who can send chat messages can bring about this: memory poisoning: a crafted message stored as a \"fact\". That lets them store a false fact in their own memory, resulting in reduced integrity of Per-shopper memory.",
+      "threatSource": "A shopper",
+      "prerequisites": "who can send chat messages",
+      "threatAction": "Memory poisoning: a crafted message stored as a \"fact\"",
+      "threatImpact": "lets them store a false fact in their own memory",
+      "impactedGoal": [
+        "integrity"
+      ],
+      "impactedAssets": [
+        "Per-shopper memory"
+      ],
+      "displayOrder": 5,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Low"
+        },
+        {
+          "key": "Comments",
+          "value": "4. Residual: A shopper can poison their own memory. Evidence: `osmemory.py` (`check_actor`)"
+        }
+      ]
+    },
+    {
+      "id": "t6",
+      "numericId": 6,
+      "status": "threatIdentified",
+      "statement": "An operator or attacker with account access can bring about this: no record of who ran what. That lets them act without a record of who did what, resulting in reduced accountability of AWS account credentials and IAM roles.",
+      "threatSource": "An operator or attacker",
+      "prerequisites": "with account access",
+      "threatAction": "No record of who ran what",
+      "threatImpact": "lets them act without a record of who did what",
+      "impactedGoal": [
+        "accountability"
+      ],
+      "impactedAssets": [
+        "AWS account credentials and IAM roles"
+      ],
+      "displayOrder": 6,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "R"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "5. Residual: Logs are not centralised or alarmed. Log groups keep 90 days; the Lambda is limited to 5 concurrent executions. Evidence: `agentcore.yaml:173,376-383`"
+        }
+      ]
+    },
+    {
+      "id": "t7",
+      "numericId": 7,
+      "status": "threatIdentified",
+      "statement": "An internet caller who knows the collection endpoint can bring about this: the collection is read from the internet. That lets them read the catalog from outside the VPC, resulting in reduced confidentiality of Product catalog.",
+      "threatSource": "An internet caller",
+      "prerequisites": "who knows the collection endpoint",
+      "threatAction": "The collection is read from the internet",
+      "threatImpact": "lets them read the catalog from outside the VPC",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Product catalog"
+      ],
+      "displayOrder": 7,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "6. Residual: Roles in the same account with broad IAM could still read it. Evidence: `collection.yaml`; `agentcore.yaml` (`AgentsDataAccessPolicy`)"
+        }
+      ]
+    },
+    {
+      "id": "t8",
+      "numericId": 8,
+      "status": "threatIdentified",
+      "statement": "A reader of the repository with read access to the code or history can bring about this: secrets in the repository. That lets them find a secret and use it, resulting in reduced confidentiality of Inventory bearer token and Cognito client secret, AWS account credentials and IAM roles.",
+      "threatSource": "A reader of the repository",
+      "prerequisites": "with read access to the code or history",
+      "threatAction": "Secrets in the repository",
+      "threatImpact": "lets them find a secret and use it",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Inventory bearer token and Cognito client secret",
+        "AWS account credentials and IAM roles"
+      ],
+      "displayOrder": 8,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "7. Residual: None known. Evidence: `.github/workflows/ci.yml:29-34`"
+        }
+      ]
+    },
+    {
+      "id": "t9",
+      "numericId": 9,
+      "status": "threatIdentified",
+      "statement": "A shopper who calls the app with a different actor id can bring about this: memory of one shopper returned to another. That lets them read another shopper's memory, resulting in reduced confidentiality of Per-shopper memory.",
+      "threatSource": "A shopper",
+      "prerequisites": "who calls the app with a different actor id",
+      "threatAction": "Memory of one shopper returned to another",
+      "threatImpact": "lets them read another shopper's memory",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Per-shopper memory"
+      ],
+      "displayOrder": 9,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "8. Residual: Relies on the app passing the right actor. Evidence: `osmemory.py`; `tests/unit/test_osmemory.py`"
+        }
+      ]
+    },
+    {
+      "id": "t10",
+      "numericId": 10,
+      "status": "threatIdentified",
+      "statement": "A caller or a runaway loop who can send many requests can bring about this: model or search cost runaway. That drives model and search cost up, resulting in reduced availability of Model invocations.",
+      "threatSource": "A caller or a runaway loop",
+      "prerequisites": "who can send many requests",
+      "threatAction": "Model or search cost runaway",
+      "threatImpact": "drives model and search cost up",
+      "impactedGoal": [
+        "availability"
+      ],
+      "impactedAssets": [
+        "Model invocations"
+      ],
+      "displayOrder": 10,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "D"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "9. Residual: No per-user rate limit. Evidence: `collection.yaml`; `agentcore.yaml:173`"
+        }
+      ]
+    },
+    {
+      "id": "t11",
+      "numericId": 11,
+      "status": "threatIdentified",
+      "statement": "A compromised runtime or Lambda holding its role can bring about this: runtime or Lambda role used for more than intended. That lets it use permissions beyond its job, resulting in reduced confidentiality and integrity of AWS account credentials and IAM roles.",
+      "threatSource": "A compromised runtime or Lambda",
+      "prerequisites": "holding its role",
+      "threatAction": "Runtime or Lambda role used for more than intended",
+      "threatImpact": "lets it use permissions beyond its job",
+      "impactedGoal": [
+        "confidentiality and integrity"
+      ],
+      "impactedAssets": [
+        "AWS account credentials and IAM roles"
+      ],
+      "displayOrder": 11,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "10. Residual: `Resource: \"*\"` remains only on X-Ray trace writes (runtime role) and `bedrock:Rerank` (connector roles), which have no resource type, and on `cloudwatch:PutMetricData`, which is limited by namespace (`bedrock-agentcore`). Workload access tokens are scoped to this runtime's workload identity. Model access is by family (`claude-haiku-4-5-*`, `claude-sonnet-4-5-*`) in any Region, which the cross-Region inference profiles need. Evidence: `agentcore.yaml:397-406`; `tests/unit/test_agentcore_iam.py`"
+        }
+      ]
+    },
+    {
+      "id": "t12",
+      "numericId": 12,
+      "status": "threatIdentified",
+      "statement": "An outside caller who can reach the EC2 host or its Streamlit port can bring about this: public use of the EC2 host or its Streamlit port. That lets them use the demo app and its role, resulting in reduced confidentiality of AWS account credentials and IAM roles.",
+      "threatSource": "An outside caller",
+      "prerequisites": "who can reach the EC2 host or its Streamlit port",
+      "threatAction": "Public use of the EC2 host or its Streamlit port",
+      "threatImpact": "lets them use the demo app and its role",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "AWS account credentials and IAM roles"
+      ],
+      "displayOrder": 12,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "Comments",
+          "value": "11. Residual: Anyone with SSM access to the instance can reach it; the instance's security group is outside this repository (see Assumptions). Evidence: `install_app.sh:29,74-86`"
+        }
+      ]
+    },
+    {
+      "id": "t13",
+      "numericId": 13,
+      "status": "threatIdentified",
+      "statement": "A compromised dependency that is installed at build time can bring about this: a compromised or changed dependency is packaged into the runtime. That runs hostile code with the runtime role, resulting in reduced integrity of Deployment packages.",
+      "threatSource": "A compromised dependency",
+      "prerequisites": "that is installed at build time",
+      "threatAction": "A compromised or changed dependency is packaged into the runtime",
+      "threatImpact": "runs hostile code with the runtime role",
+      "impactedGoal": [
+        "integrity"
+      ],
+      "impactedAssets": [
+        "Deployment packages"
+      ],
+      "displayOrder": 13,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "12. Residual: Transitive dependencies are pinned but not hash pinned; `pip-audit` runs in CI on every pull request and weekly against the pinned versions, but a package compromised before an advisory exists is not caught. Evidence: `deploy_agentcore.py:71,121-123`; `test_deploy_agentcore_bucket.py`"
+        }
+      ]
+    },
+    {
+      "id": "t14",
+      "numericId": 14,
+      "status": "threatIdentified",
+      "statement": "Another account's owner who owns the artifact bucket name can bring about this: the Lambda or runtime package is uploaded to, or deployed from, a bucket the deployer does not own. That lets them replace the package that gets deployed, resulting in reduced integrity of Deployment packages.",
+      "threatSource": "Another account's owner",
+      "prerequisites": "who owns the artifact bucket name",
+      "threatAction": "The Lambda or runtime package is uploaded to, or deployed from, a bucket the deployer does not own",
+      "threatImpact": "lets them replace the package that gets deployed",
+      "impactedGoal": [
+        "integrity"
+      ],
+      "impactedAssets": [
+        "Deployment packages"
+      ],
+      "displayOrder": 14,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "13. Residual: Anyone in the account with write access to the bucket can replace a package before deploy. Evidence: `deploy_agentcore.py:78-99,113`; `test_deploy_agentcore_bucket.py`"
+        }
+      ]
+    },
+    {
+      "id": "t15",
+      "numericId": 15,
+      "status": "threatIdentified",
+      "statement": "An operator account with ssm:SendCommand on the instance can bring about this: the app install path is abused to run commands as root on the host. That lets them run commands as root on the host, resulting in reduced integrity of Deployment packages, AWS account credentials and IAM roles.",
+      "threatSource": "An operator account",
+      "prerequisites": "with ssm:SendCommand on the instance",
+      "threatAction": "The app install path is abused to run commands as root on the host",
+      "threatImpact": "lets them run commands as root on the host",
+      "impactedGoal": [
+        "integrity"
+      ],
+      "impactedAssets": [
+        "Deployment packages",
+        "AWS account credentials and IAM roles"
+      ],
+      "displayOrder": 15,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "14. Residual: Anyone with `ssm:SendCommand` on the instance has root on it. Evidence: `scripts/deploy_app_to_ec2.py:122-147`; `install_app.sh:73-86`"
+        }
+      ]
+    },
+    {
+      "id": "t16",
+      "numericId": 16,
+      "status": "threatIdentified",
+      "statement": "A caller who can invoke the runtime and knows another shopper's session id can bring about this: a caller reuses another shopper's runtime session id and reads that conversation. That lets them continue that shopper's conversation, resulting in reduced confidentiality of Per-shopper memory.",
+      "threatSource": "A caller who can invoke the runtime",
+      "prerequisites": "and knows another shopper's session id",
+      "threatAction": "A caller reuses another shopper's runtime session id and reads that conversation",
+      "threatImpact": "lets them continue that shopper's conversation",
+      "impactedGoal": [
+        "confidentiality"
+      ],
+      "impactedAssets": [
+        "Per-shopper memory"
+      ],
+      "displayOrder": 16,
+      "metadata": [
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        },
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "Comments",
+          "value": "15. Residual: The runtime now takes the session id from the runtime context first and uses the payload value only when there is no context (a local run), so a caller cannot name another session in the payload (`main.py:156`); the id is still not bound to the shopper, so anyone who holds both a session id and invoke rights can continue that session. Evidence: `main.py:156`; `agentcore.py` (`new_session_id`)"
+        }
+      ]
+    }
+  ],
+  "mitigations": [
+    {
+      "id": "m1",
+      "numericId": 1,
+      "status": "mitigationResolved",
+      "content": "Custom JWT authorizer with one allowed client and one allowed scope; the Lambda has no resource policy and is invoked only by the Gateway role; reserved concurrency of 5 limits abuse (`agentcore.yaml:173,229-257,267-271`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 1a"
+        }
+      ]
+    },
+    {
+      "id": "m2",
+      "numericId": 2,
+      "status": "mitigationResolved",
+      "content": "Custom JWT authorizer with one allowed client and scope; the Cognito client secret is copied into a secret that only the runtime role can read (`inventory-gateway.yaml:44-56,252-257`; `agentcore.yaml:408-416`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 1b"
+        }
+      ]
+    },
+    {
+      "id": "m3",
+      "numericId": 3,
+      "status": "mitigationResolved",
+      "content": "The app, not the model, sets the actor id on every memory call; the model cannot choose it (`app.py` (memory calls))",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 2"
+        }
+      ]
+    },
+    {
+      "id": "m4",
+      "numericId": 4,
+      "status": "mitigationResolved",
+      "content": "Tools are read-only (search, inventory lookup); the agent has no write tools and no code execution; the search Lambda requires a query, caps `size` at 10 and coerces price bounds to numbers (`search_lambda.py`; `main.py`; `docs/limitations.md`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 3"
+        }
+      ]
+    },
+    {
+      "id": "m5",
+      "numericId": 5,
+      "status": "mitigationIdentified",
+      "content": "Attach a Bedrock Guardrail to the agent and the model connectors before any wider use (not in the demo)."
+    },
+    {
+      "id": "m6",
+      "numericId": 6,
+      "status": "mitigationResolved",
+      "content": "Facts are written per shopper only, so the effect stays inside one shopper's actor; reset script clears demo shoppers (`osmemory.py` (`check_actor`))",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 4"
+        }
+      ]
+    },
+    {
+      "id": "m7",
+      "numericId": 7,
+      "status": "mitigationResolved",
+      "content": "AgentCore runtime logs and X-Ray traces, Lambda logs, CloudTrail (`agentcore.yaml:173,376-383`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 5"
+        }
+      ]
+    },
+    {
+      "id": "m8",
+      "numericId": 8,
+      "status": "mitigationResolved",
+      "content": "The collection's network policy allows only the VPC endpoint, and reading also needs an entry in the data access policy, which lists named roles (`collection.yaml`; `agentcore.yaml` (`AgentsDataAccessPolicy`))",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 6"
+        }
+      ]
+    },
+    {
+      "id": "m9",
+      "numericId": 9,
+      "status": "mitigationResolved",
+      "content": "`.gitleaks.toml` and the GitHub Actions workflow scan the full history; secrets live in Secrets Manager; `.env` and ids files are git-ignored (`.github/workflows/ci.yml:29-34`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 7"
+        }
+      ]
+    },
+    {
+      "id": "m10",
+      "numericId": 10,
+      "status": "mitigationResolved",
+      "content": "Every search covers exactly one actor, enforced by OpenSearch Memory; tested with Alice and Bob (`osmemory.py`; `tests/unit/test_osmemory.py`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 8"
+        }
+      ]
+    },
+    {
+      "id": "m11",
+      "numericId": 11,
+      "status": "mitigationResolved",
+      "content": "Search OCU capped (max 4); runtime session timeouts; Haiku used for agent turns; the search Lambda is limited to 5 concurrent executions (`collection.yaml`; `agentcore.yaml:173`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 9"
+        }
+      ]
+    },
+    {
+      "id": "m12",
+      "numericId": 12,
+      "status": "mitigationResolved",
+      "content": "Roles are scoped to the named collection, memory, runtime, secret and model resources (`agentcore.yaml:397-406`; `tests/unit/test_agentcore_iam.py`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 10"
+        }
+      ]
+    },
+    {
+      "id": "m13",
+      "numericId": 13,
+      "status": "mitigationResolved",
+      "content": "Streamlit binds to 127.0.0.1 and is reached only through SSM; the environment file is fetched into tmpfs at start and never stored on disk; the service runs as a non-root user (`install_app.sh:29,74-86`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 11"
+        }
+      ]
+    },
+    {
+      "id": "m14",
+      "numericId": 14,
+      "status": "mitigationResolved",
+      "content": "Runtime dependencies are pinned with `==` in `infra/serverless/agentcore/requirements.txt` and installed as wheels only (`--only-binary=:all:`); a unit test fails if any entry is unpinned; `pip-audit` is run over the resolved set before a release (`deploy_agentcore.py:71,121-123`; `test_deploy_agentcore_bucket.py`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 12"
+        }
+      ]
+    },
+    {
+      "id": "m15",
+      "numericId": 15,
+      "status": "mitigationResolved",
+      "content": "`ExpectedBucketOwner` on every S3 call; the deployer refuses a bucket that another account owns; Block Public Access, default encryption and a TLS-only bucket policy are re-applied on every run (`deploy_agentcore.py:78-99,113`; `test_deploy_agentcore_bucket.py`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 13"
+        }
+      ]
+    },
+    {
+      "id": "m16",
+      "numericId": 16,
+      "status": "mitigationResolved",
+      "content": "Install runs through SSM `send_command` from the operator's credentials; the tarball comes from a single-use bucket with a random suffix through a 15-minute presigned URL and is deleted afterwards; the service runs as a non-root user with `NoNewPrivileges` (`scripts/deploy_app_to_ec2.py:122-147`; `install_app.sh:73-86`)",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 14"
+        }
+      ]
+    },
+    {
+      "id": "m17",
+      "numericId": 17,
+      "status": "mitigationResolved",
+      "content": "Session ids are random UUIDs the app generates; compute is isolated per runtime session; only the app role (and account administrators) can invoke the runtime (`main.py:156`; `agentcore.py` (`new_session_id`))",
+      "metadata": [
+        {
+          "key": "Comments",
+          "value": "Row 15"
+        }
+      ]
+    }
+  ],
+  "mitigationLinks": [
+    {
+      "mitigationId": "m1",
+      "linkedId": "t1"
+    },
+    {
+      "mitigationId": "m2",
+      "linkedId": "t2"
+    },
+    {
+      "mitigationId": "m3",
+      "linkedId": "t3"
+    },
+    {
+      "mitigationId": "m4",
+      "linkedId": "t4"
+    },
+    {
+      "mitigationId": "m5",
+      "linkedId": "t4"
+    },
+    {
+      "mitigationId": "m6",
+      "linkedId": "t5"
+    },
+    {
+      "mitigationId": "m7",
+      "linkedId": "t6"
+    },
+    {
+      "mitigationId": "m8",
+      "linkedId": "t7"
+    },
+    {
+      "mitigationId": "m9",
+      "linkedId": "t8"
+    },
+    {
+      "mitigationId": "m10",
+      "linkedId": "t9"
+    },
+    {
+      "mitigationId": "m11",
+      "linkedId": "t10"
+    },
+    {
+      "mitigationId": "m12",
+      "linkedId": "t11"
+    },
+    {
+      "mitigationId": "m13",
+      "linkedId": "t12"
+    },
+    {
+      "mitigationId": "m14",
+      "linkedId": "t13"
+    },
+    {
+      "mitigationId": "m15",
+      "linkedId": "t14"
+    },
+    {
+      "mitigationId": "m16",
+      "linkedId": "t15"
+    },
+    {
+      "mitigationId": "m17",
+      "linkedId": "t16"
+    }
+  ]
+}

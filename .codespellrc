@@ -1,0 +1,4 @@
+[codespell]
+# showcase-ids.json holds real product titles from the ESCI dataset, typos included; "ans" is a graph node id; test_docs.py splits words on purpose.
+skip = .git,.venv,*.svg,*.png,*.jpg,*.parquet,*.pdf,threat-model.tc.json,showcase-ids.json,*/showcase-ids.json,data,build,.pytest_cache
+ignore-words-list = ans,gard

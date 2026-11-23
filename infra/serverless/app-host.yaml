@@ -1,0 +1,87 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Optional. A small EC2 host inside the collection's VPC with no inbound access, reached only through AWS Systems Manager.
+  It forwards your laptop's port to the private collection endpoint and can run the Streamlit app as a service
+  (scripts/deploy_app_to_ec2.py). Sample for a non-production account.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: sample-agent-ret
+    AllowedPattern: "^[a-z][a-z0-9-]{2,15}$"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A subnet of the collection's VPC with a route to the internet (a NAT gateway is enough), so the host can install packages.
+  InstanceType:
+    Type: String
+    Default: t3.small
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  HostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: Egress is limited to TCP 443. The AWS service endpoints (Systems Manager, package mirrors) have public addresses behind the NAT gateway, so the destination cannot be narrowed; there are no inbound rules.
+    Properties:
+      GroupDescription: !Sub "${NamePrefix}: app host (no inbound rules; reached through Systems Manager only)"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS to AWS services, the collection endpoint and package mirrors (the AWS service endpoints have public addresses, so the destination cannot be narrowed further)
+
+  HostRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+  HostProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref HostRole]
+
+  Host:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      EbsOptimized: true
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref HostProfile
+      SecurityGroupIds: [!Ref HostSecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-app-host"
+
+Outputs:
+  InstanceId:
+    Value: !Ref Host
+  HostRoleArn:
+    Value: !GetAtt HostRole.Arn

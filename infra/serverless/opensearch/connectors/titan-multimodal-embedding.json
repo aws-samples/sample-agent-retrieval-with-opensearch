@@ -1,0 +1,29 @@
+{
+  "name": "@@PREFIX@@-titan-multimodal-embed-1024",
+  "version": "1",
+  "description": "project: @@PREFIX@@ - Amazon Titan Multimodal Embeddings G1, 1024 dims (text and pictures share one space)",
+  "protocol": "aws_sigv4",
+  "parameters": {
+    "service_name": "bedrock",
+    "model": "amazon.titan-embed-image-v1",
+    "region": "@@MULTIMODAL_REGION@@",
+    "dimensions": "1024"
+  },
+  "actions": [
+    {
+      "action_type": "PREDICT",
+      "method": "POST",
+      "url": "https://bedrock-runtime.${parameters.region}.amazonaws.com/model/${parameters.model}/invoke",
+      "headers": {
+        "x-amz-content-sha256": "required",
+        "content-type": "application/json"
+      },
+      "request_body": "{ \"inputText\": \"${parameters.inputText}\", \"embeddingConfig\": { \"outputEmbeddingLength\": ${parameters.dimensions} } }",
+      "pre_process_function": "connector.pre_process.bedrock.multimodal_embedding",
+      "post_process_function": "connector.post_process.bedrock.embedding"
+    }
+  ],
+  "credential": {
+    "roleArn": "@@MULTIMODAL_ROLE_ARN@@"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "settings": {
+    "index": {
+      "knn": true
+    }
+  },
+  "mappings": {
+    "_meta": {
+      "synthetic_fields": [
+        "price",
+        "in_stock"
+      ],
+      "project": "@@PREFIX@@",
+      "source": "Amazon Shopping Queries (ESCI) dataset, Apache-2.0; US locale, small version test split plus all piggy/coin banks",
+      "track": "serverless"
+    },
+    "properties": {
+      "brand": {
+        "type": "text",
+        "fields": {
+          "raw": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "bullet_points": {
+        "type": "text",
+        "analyzer": "english"
+      },
+      "color": {
+        "type": "keyword",
+        "ignore_above": 128
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "english"
+      },
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 1024,
+        "method": {
+          "name": "hnsw",
+          "space_type": "innerproduct"
+        }
+      },
+      "in_stock": {
+        "type": "boolean"
+      },
+      "price": {
+        "type": "float"
+      },
+      "price_synthetic": {
+        "type": "boolean"
+      },
+      "product_id": {
+        "type": "keyword"
+      },
+      "source": {
+        "type": "keyword"
+      },
+      "story_role": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "title": {
+        "type": "text",
+        "fields": {
+          "raw": {
+            "type": "keyword",
+            "ignore_above": 512
+          }
+        },
+        "analyzer": "english"
+      },
+      "embed_text": {
+        "type": "text",
+        "index": false
+      },
+      "image_embedding": {
+        "type": "knn_vector",
+        "dimension": 1024,
+        "method": {
+          "name": "hnsw",
+          "space_type": "innerproduct"
+        }
+      }
+    }
+  }
+}

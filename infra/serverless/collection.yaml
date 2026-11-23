@@ -1,0 +1,211 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Sample Serverless track: an Amazon OpenSearch Serverless NextGen collection group and vector search
+  collection, reachable only through a private interface endpoint, plus the IAM role that the collection's
+  ML Commons connector assumes to call Amazon Bedrock. Every resource is new and prefixed sample-agent-ret.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: sample-agent-ret
+    AllowedPattern: "^[a-z][a-z0-9-]{2,15}$"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for the interface endpoint, one per Availability Zone.
+  ClientCidr:
+    Type: String
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(1[6-9]|2[0-9]|3[0-2])$"
+    ConstraintDescription: must be an IPv4 CIDR with a prefix of /16 or longer (0.0.0.0/0 is not allowed).
+    Description: CIDR allowed to reach the endpoint on 443. Prefix /16 or longer.
+  DataPrincipalArns:
+    Type: CommaDelimitedList
+    Description: IAM role ARNs that may read and write the collection (data access policy).
+  MaxIndexingOcu:
+    Type: Number
+    Default: 4
+  MaxSearchOcu:
+    Type: Number
+    Default: 4
+  MinSearchOcu:
+    Type: Number
+    Default: 2
+    AllowedValues: [0, 2, 4, 8, 16]
+    Description: >-
+      Search capacity kept running (OCU). 0 lets search scale to zero when idle, and the first query after a quiet period pays a cold start.
+      With standby replicas on (this group), the service accepts only 0, 2, 4, 8, 16 or a multiple of 16: 2 is one active plus one standby OCU.
+
+  EmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+  RerankModelId:
+    Type: String
+    Default: cohere.rerank-v3-5:0
+    Description: Bedrock rerank model, invoked through the Rerank API (in us-east-1 by default, and in any extra Region you add).
+  MultimodalModelId:
+    Type: String
+    Default: amazon.titan-embed-image-v1
+    Description: The multimodal embedding model for the picture vectors. It is offered in us-east-1 and us-west-2 (not every Region), so the policy allows any Region.
+
+Resources:
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${NamePrefix}: HTTPS to the Serverless collection endpoint"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ClientCidr
+          Description: Clients in the VPC
+      SecurityGroupEgress:
+        # The endpoint network interfaces only answer requests, so no outbound traffic is needed; this rule is a
+        # loopback placeholder that replaces the default allow-all egress.
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+          Description: No outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-aoss-endpoint"
+
+  # Private DNS stays off: the VPC already has an aoss-data endpoint with private DNS, and a second one
+  # with private DNS would be rejected. Clients reach this one by its own DNS name.
+  DataEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.aoss-data"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-aoss-data"
+
+  EncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${NamePrefix}-enc"
+      Type: encryption
+      Policy: !Sub |
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/${NamePrefix}-products"]}],"AWSOwnedKey":true}
+
+  NetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${NamePrefix}-net"
+      Type: network
+      Policy: !Sub |
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/${NamePrefix}-products"]}],
+          "AllowFromPublic":false,"SourceVPCEs":["${DataEndpoint}"]}]
+
+  CollectionGroup:
+    Type: AWS::OpenSearchServerless::CollectionGroup
+    Properties:
+      Name: !Sub "${NamePrefix}-group"
+      Generation: NEXTGEN
+      StandbyReplicas: ENABLED
+      Description: Sample Serverless track (indexing scales to zero when idle; search keeps MinSearchOcu running)
+      CapacityLimits:
+        MinIndexingCapacityInOcu: 0
+        MaxIndexingCapacityInOcu: !Ref MaxIndexingOcu
+        MinSearchCapacityInOcu: !Ref MinSearchOcu
+        MaxSearchCapacityInOcu: !Ref MaxSearchOcu
+      Tags:
+        - Key: project
+          Value: sample-agent-ret
+
+  Collection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn: [EncryptionPolicy, NetworkPolicy, CollectionGroup]
+    Properties:
+      Name: !Sub "${NamePrefix}-products"
+      Type: VECTORSEARCH
+      CollectionGroupName: !Sub "${NamePrefix}-group"
+      Description: Sample product catalog (hybrid retrieval) for the Serverless track
+      Tags:
+        - Key: project
+          Value: sample-agent-ret
+
+  DataAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub "${NamePrefix}-data"
+      Type: data
+      Policy: !Sub
+        - |
+          [{"Rules":[
+              {"ResourceType":"index","Resource":["index/${NamePrefix}-products/*"],
+               "Permission":["aoss:CreateIndex","aoss:DescribeIndex","aoss:UpdateIndex","aoss:DeleteIndex","aoss:ReadDocument","aoss:WriteDocument"]},
+              {"ResourceType":"collection","Resource":["collection/${NamePrefix}-products"],
+               "Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems","aoss:UpdateCollectionItems","aoss:DeleteCollectionItems"]},
+              {"ResourceType":"model","Resource":["model/${NamePrefix}-products/*"],
+               "Permission":["aoss:CreateMLResource","aoss:DescribeMLResource","aoss:UpdateMLResource","aoss:DeleteMLResource","aoss:ExecuteMLResource"]}],
+            "Principal":${Principals}}]
+        - Principals: !Join ["", ["[\"", !Join ["\",\"", !Ref DataPrincipalArns], "\"]"]]
+
+  # The collection's ML Commons connectors assume this role to call Amazon Bedrock (Titan embeddings, Cohere Rerank).
+  BedrockConnectorRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: The API has no resource-level permissions for this action (for example bedrock:Rerank)
+          - id: W28
+            reason: Fixed name that scripts, docs and policies refer to; a generated name would break them
+    Properties:
+      RoleName: !Sub "${NamePrefix}-bedrock-connector"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ml.opensearchservice.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref BedrockConnectorRolePolicy
+      Tags:
+        - Key: project
+          Value: sample-agent-ret
+
+
+  BedrockConnectorRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: Resource * only on bedrock:Rerank, which has no resource type; the model invocation statements are scoped to the named models
+    Properties:
+      Description: "Permissions of BedrockConnectorRole (the inline policy InvokeBedrockModels, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource:
+              - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
+              - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/${RerankModelId}"
+              - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/${MultimodalModelId}"
+          - Sid: RerankHasNoResourceLevelPermissions
+            Effect: Allow
+            Action: bedrock:Rerank
+            Resource: "*"
+
+Outputs:
+  CollectionId:
+    Value: !GetAtt Collection.Id
+  CollectionEndpoint:
+    Value: !GetAtt Collection.CollectionEndpoint
+  DataEndpointId:
+    Value: !Ref DataEndpoint
+  EndpointSecurityGroupId:
+    Value: !Ref EndpointSecurityGroup
+  BedrockConnectorRoleArn:
+    Value: !GetAtt BedrockConnectorRole.Arn

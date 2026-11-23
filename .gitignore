@@ -1,0 +1,22 @@
+.env*
+!config/.env.example
+config/ids*.json
+!config/ids.example.json
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+docs/results/*.local.*
+# Demo recordings are large and are not checked in.
+*.mp4
+*.webm
+*.mov
+data/
+~$*
+.ash/
+.ruff_cache/
+.state/

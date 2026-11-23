@@ -1,0 +1,515 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Sample Serverless track, part 2: what Amazon Bedrock AgentCore provides where OpenSearch Serverless has no equivalent.
+  The catalog search as an AgentCore Gateway (MCP) with a VPC Lambda target, the roles for the agent runtime (created by
+  infra/serverless/deploy_agentcore.py), and the data access policy that lets the Lambda and the runtime read the private
+  collection. The shopper's memory is an Amazon OpenSearch Memory space (no CloudFormation resource exists for it yet, so
+  deploy_agentcore.py creates it); this template only grants the app role access to it. Every resource is new.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: sample-agent-ret
+  CodeBucket:
+    Type: String
+    Description: S3 bucket holding the search Lambda package (created by deploy_agentcore.py).
+  SearchLambdaKey:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  ClientCidr:
+    Type: String
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(1[6-9]|2[0-9]|3[0-2])$"
+    Description: The CIDR the collection stack lets reach its endpoint (the VPC's range). The search Lambda's egress is limited to it.
+  CollectionName:
+    Type: String
+    Default: sample-agent-ret-products
+  CollectionId:
+    Type: String
+    Description: ID of the collection (stack output of collection.yaml); scopes the IAM permission to this one collection.
+  CollectionHost:
+    Type: String
+    Description: Host name of the collection endpoint (no scheme).
+  EndpointDns:
+    Type: String
+    Description: DNS name of the interface endpoint created by collection.yaml.
+  Index:
+    Type: String
+    Default: sample-agent-ret-products
+  SearchPipeline:
+    Type: String
+    Default: sample-agent-ret-hybrid
+  VectorFields:
+    Type: String
+    Default: embedding
+    Description: Comma-separated vector fields of the products index the search tool queries (the second index has two text fields).
+  ImageModelId:
+    Type: String
+    Default: ""
+    Description: Multimodal embedding model id on the collection for the picture vectors; empty for none.
+  EmbeddingModelId:
+    Type: String
+    Description: The collection's model ID for Titan Text Embeddings v2 (ids.json).
+  AgentModelId:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  AppTrustedPrincipalArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Role that may assume the app role (the role of the EC2 instance that hosts the Streamlit app). The app never uses
+      that role's own permissions; it only assumes sample-agent-ret-app, which can do what the app needs and nothing else.
+      Empty skips the app role.
+
+  InventoryClientSecretArn:
+    Type: String
+    Default: ""
+    Description: Secret with the inventory Gateway client credentials (created by deploy_agentcore.py); empty disables it.
+  MemorySpaceId:
+    Type: String
+    AllowedPattern: "^sp-[0-9a-f]+$"
+    Description: ID of the Amazon OpenSearch Memory space that holds the shoppers' memories (created by deploy_agentcore.py).
+  MemoryRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region of the space. OpenSearch Memory is in us-east-1, us-west-2, ap-northeast-1 and eu-central-1 only.
+
+Conditions:
+  HasApp: !Not [!Equals [!Ref AppTrustedPrincipalArn, ""]]
+  HasInventory: !Not [!Equals [!Ref InventoryClientSecretArn, ""]]
+
+Resources:
+  # ---- the catalog search tool: a Lambda in the VPC, invoked only by the Gateway's role --------------------------------
+  SearchFunctionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${NamePrefix}: search Lambda, HTTPS out to the collection endpoint"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ClientCidr
+          Description: The interface endpoint in the VPC
+      Tags:
+        - {Key: Name, Value: !Sub "${NamePrefix}-search-fn"}
+
+  SearchFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: "sts:AssumeRole"}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Ref SearchFunctionRolePolicy
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+
+  SearchFunctionRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Permissions of SearchFunctionRole (the inline policy use-the-collection, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: aoss:APIAccessAll
+            Resource: !Sub "arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/${CollectionId}"
+          - Sid: DeadLetters
+            Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt SearchFunctionDeadLetterQueue.Arn
+
+  SearchFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: Sample log group holding one JSON line per call; the default CloudWatch Logs encryption is used
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log group holds one JSON line per call (tool name and outcome, no payloads); the default CloudWatch Logs encryption is used for the sample
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-search-tool"
+      RetentionInDays: 90
+
+  SearchFunctionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${NamePrefix}-search-tool-dlq"
+      KmsMasterKeyId: alias/aws/sqs  # encrypted at rest with the AWS-managed SQS key
+      MessageRetentionPeriod: 345600
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+  SearchFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SearchFunctionLogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_173
+            comment: The environment holds the collection endpoint, index and model ids; no secrets, so the default Lambda environment encryption is used
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-search-tool"
+      Description: Catalog search tool for the Serverless track (AgentCore Gateway target)
+      Runtime: python3.12
+      Handler: search_lambda.lambda_handler
+      Role: !GetAtt SearchFunctionRole.Arn
+      # Failed asynchronous invocations land here. The Gateway calls the function synchronously, so nothing is expected in it.
+      DeadLetterConfig:
+        TargetArn: !GetAtt SearchFunctionDeadLetterQueue.Arn
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: 5
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref SearchLambdaKey
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds: [!Ref SearchFunctionSecurityGroup]
+      Environment:
+        Variables:
+          COLLECTION_HOST: !Ref CollectionHost
+          ENDPOINT_DNS: !Ref EndpointDns
+          INDEX: !Ref Index
+          SEARCH_PIPELINE: !Ref SearchPipeline
+          EMBEDDING_MODEL_ID: !Ref EmbeddingModelId
+          VECTOR_FIELDS: !Ref VectorFields
+          IMAGE_MODEL_ID: !Ref ImageModelId
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+  # ---- inbound auth for the outside MCP client: its own Cognito pool, client-credentials grant ------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${NamePrefix}-catalog-pool"
+      AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}
+      UserPoolTags: {project: sample-agent-ret}
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "${NamePrefix}-catalog-${AWS::AccountId}"
+
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: catalog
+      Name: Catalog search
+      Scopes:
+        - {ScopeName: search, ScopeDescription: Search the product catalog}
+
+  AppClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${NamePrefix}-outside-client"
+      GenerateSecret: true  # pragma: allowlist secret
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [catalog/search]
+      SupportedIdentityProviders: [COGNITO]
+      AccessTokenValidity: 24
+      TokenValidityUnits: {AccessToken: hours}
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Service role of the catalog-search AgentCore Gateway
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: bedrock-agentcore.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {"aws:SourceAccount": !Ref "AWS::AccountId"}
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
+      ManagedPolicyArns:
+        - !Ref GatewayRolePolicy
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+
+  GatewayRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Permissions of GatewayRole (the inline policy invoke-search-function, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Action: "lambda:InvokeFunction", Resource: !GetAtt SearchFunction.Arn}
+
+  Gateway:
+    Type: AWS::BedrockAgentCore::Gateway
+    Properties:
+      Name: !Sub "${NamePrefix}-catalog"
+      Description: Catalog search (search_products) for outside MCP clients, Serverless track
+      ProtocolType: MCP
+      RoleArn: !GetAtt GatewayRole.Arn
+      AuthorizerType: CUSTOM_JWT
+      AuthorizerConfiguration:
+        CustomJWTAuthorizer:
+          DiscoveryUrl: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration"
+          AllowedClients: [!Ref AppClient]
+          AllowedScopes: [catalog/search]
+      Tags:
+        project: sample-agent-ret
+
+  GatewayTarget:
+    Type: AWS::BedrockAgentCore::GatewayTarget
+    Properties:
+      GatewayIdentifier: !GetAtt Gateway.GatewayIdentifier
+      Name: catalog
+      Description: Hybrid product search over the private collection
+      CredentialProviderConfigurations:
+        - CredentialProviderType: GATEWAY_IAM_ROLE
+      TargetConfiguration:
+        Mcp:
+          Lambda:
+            LambdaArn: !GetAtt SearchFunction.Arn
+            ToolSchema:
+              InlinePayload:
+                - Name: search_products
+                  Description: >-
+                    Search the product catalog (hybrid keyword and vector search, price filter inside the query).
+                    Input: query (the product words, no price words), optional min_price and max_price in US dollars,
+                    optional size (1 to 10, default 5). Returns hits with product_id, title, price and in_stock.
+                  InputSchema:
+                    Type: object
+                    Required: [query]
+                    Properties:
+                      query: {Type: string, Description: "Product words, for example dinosaur piggy bank"}
+                      min_price: {Type: number, Description: "Lowest price in US dollars"}
+                      max_price: {Type: number, Description: "Highest price in US dollars"}
+                      size: {Type: integer, Description: "How many results, 1 to 10"}
+
+  # ---- the runtime that hosts the Strands agent (the runtime itself is created by deploy_agentcore.py) ---------------
+  RuntimeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: The runtime needs HTTPS out to Bedrock and AgentCore APIs through the NAT gateway; port 443 only
+    Properties:
+      GroupDescription: !Sub "${NamePrefix}: agent runtime, HTTPS out"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: The collection endpoint (VPC) and AWS APIs through the NAT gateway
+      Tags:
+        - {Key: Name, Value: !Sub "${NamePrefix}-agent-runtime"}
+
+  RuntimeRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >-
+              X-Ray trace writes have no resource type, so Resource is "*" on those two actions only. cloudwatch:PutMetricData also
+              has none and is limited by the cloudwatch:namespace condition. Workload access tokens are scoped to this runtime's identity.
+          - id: W28
+            reason: Fixed name that scripts, docs and policies refer to; a generated name would break them
+    Properties:
+      RoleName: !Sub "${NamePrefix}-agent-runtime"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: bedrock-agentcore.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {"aws:SourceAccount": !Ref "AWS::AccountId"}
+      ManagedPolicyArns:
+        - !Ref RuntimeRolePolicy1
+        - !If [HasInventory, !Ref RuntimeRolePolicy2, !Ref "AWS::NoValue"]
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+
+  RuntimeRolePolicy1:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: X-Ray trace writes have no resource type; cloudwatch:PutMetricData has none either and is limited by the cloudwatch:namespace condition. Everything else is scoped to named resources.
+    Properties:
+      Description: "Permissions of RuntimeRole (the inline policy agent-runtime, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ModelAccess
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource:
+              - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-*"
+              - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-*"
+              - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${AgentModelId}"
+              - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*.anthropic.claude-haiku-4-5-*"
+          - Sid: Collection
+            Effect: Allow
+            Action: aoss:APIAccessAll
+            Resource: !Sub "arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/${CollectionId}"
+          - Sid: Logs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*"
+          - Sid: Traces
+            Effect: Allow
+            # X-Ray has no resource types for these actions
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+            Resource: "*"
+          - Sid: Metrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData  # no resource type either, so the namespace is the limit (AWS's runtime role example)
+            Resource: "*"
+            Condition:
+              StringEquals: {"cloudwatch:namespace": bedrock-agentcore}
+          - Sid: WorkloadIdentity
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetWorkloadAccessToken
+              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
+            # Both actions take a workload-identity resource: the default directory and the identities AgentCore
+            # creates for this runtime (named after it, with a suffix).
+            Resource:
+              - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
+              - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/sample_agent_ret_shopping_agent-*"
+
+  RuntimeRolePolicy2:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: HasInventory
+    Properties:
+      Description: "Permissions of RuntimeRole (the inline policy inventory-client-secret, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Action: "secretsmanager:GetSecretValue", Resource: !Ref InventoryClientSecretArn}  # pragma: allowlist secret
+  # ---- the role the hosted Streamlit app runs as (assumed by the EC2 instance role; least privilege) ----------------
+  AppRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Fixed name that scripts, docs and policies refer to; a generated name would break them
+    Condition: HasApp
+    Properties:
+      RoleName: !Sub "${NamePrefix}-app"
+      Description: The Serverless-track Streamlit app on EC2 assumes this role; it has only the permissions the app uses.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {AWS: !Ref AppTrustedPrincipalArn}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref AppRolePolicy
+      Tags:
+        - {Key: project, Value: sample-agent-ret}
+
+
+  AppRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # the linter's IAM service list does not include the OpenSearch Memory prefix (osm) yet
+    Condition: HasApp
+    Properties:
+      Description: "Permissions of AppRole (the inline policy serverless-track-app, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Collection
+            Effect: Allow
+            Action: aoss:APIAccessAll
+            Resource: !Sub "arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/${CollectionId}"
+          - Sid: InvokeTheAgentRuntime
+            Effect: Allow
+            Action: bedrock-agentcore:InvokeAgentRuntime
+            Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/sample_agent_ret_shopping_agent-*"
+          - Sid: ShopperMemory
+            Effect: Allow
+            Action:
+              - osm:CreateEvent
+              - osm:SearchMemories
+              - osm:SearchEvents
+              - osm:DeleteMemory
+              - osm:DeleteEvent
+            Resource: !Sub "arn:${AWS::Partition}:osm:${MemoryRegion}:${AWS::AccountId}:space/${MemorySpaceId}"
+            Condition:
+              "Null":  # every call names the shopper (the app takes it from the signed-in user)
+                osm:actorId: "false"
+          - Sid: MintTheOutsideClientToken
+            Effect: Allow
+            Action: cognito-idp:DescribeUserPoolClient
+            Resource: !GetAtt UserPool.Arn
+  # ---- the private collection admits the Lambda and the runtime (a new policy; the first one is not touched) ----------
+  AgentsDataAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub "${NamePrefix}-data-agents"
+      Type: data
+      Policy: !Sub
+        - |
+          [{"Rules":[
+              {"ResourceType":"index","Resource":["index/${CollectionName}/*"],
+               "Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
+              {"ResourceType":"collection","Resource":["collection/${CollectionName}"],
+               "Permission":["aoss:DescribeCollectionItems"]},
+              {"ResourceType":"model","Resource":["model/${CollectionName}/*"],
+               "Permission":["aoss:DescribeMLResource","aoss:ExecuteMLResource"]}],
+            "Principal":["${LambdaRole}","${RuntimeRoleArn}"${AppPrincipal}]}]
+        - LambdaRole: !GetAtt SearchFunctionRole.Arn
+          RuntimeRoleArn: !GetAtt RuntimeRole.Arn
+          AppPrincipal: !If [HasApp, !Sub ',"${AppRole.Arn}"', ""]
+
+Outputs:
+  AppRoleArn:
+    Condition: HasApp
+    Value: !GetAtt AppRole.Arn
+  GatewayUrl:
+    Value: !GetAtt Gateway.GatewayUrl
+  UserPoolId:
+    Value: !Ref UserPool
+  AppClientId:
+    Value: !Ref AppClient
+  TokenEndpoint:
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+  RuntimeRoleArn:
+    Value: !GetAtt RuntimeRole.Arn
+  RuntimeSecurityGroupId:
+    Value: !Ref RuntimeSecurityGroup
+  SearchFunctionName:
+    Value: !Ref SearchFunction

@@ -1,0 +1,57 @@
+// Architecture overview. Rebuild with: python scripts/build_diagrams.py
+digraph architecture {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=12, nodesep=0.4, ranksep=0.55, pad=0.3, splines=true, newrank=true];
+  node  [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#5f6b7a", fontname="Helvetica", fontsize=11, margin="0.16,0.1"];
+  edge  [color="#5f6b7a", fontname="Helvetica", fontsize=9, arrowsize=0.7];
+
+  shopper [label="Shopper\n(browser)", fillcolor="#f2f3f3"];
+  client  [label="Outside MCP client\n(Kiro, Claude Code, Strands)", fillcolor="#f2f3f3"];
+
+  subgraph cluster_agentcore {
+    label="Amazon Bedrock AgentCore"; style="rounded"; color="#ec7211"; fontsize=11;
+    runtime [label="Runtime (VPC mode)\nStrands agent\ntyped tool: run_product_search", fillcolor="#ffe6d9", color="#ec7211"];
+    gateway [label="Gateway (MCP)\nsearch_products\nCognito JWT", fillcolor="#ffe6d9", color="#ec7211"];
+  }
+
+  subgraph cluster_vpc {
+    label="Your VPC"; style="rounded,dashed"; color="#8b93a1"; fontsize=11;
+    app [label="Streamlit app\nowns the shopper's identity\nversion switch v0 to v3", fillcolor="#ffe6d9", color="#ec7211"];
+    lambda  [label="Search Lambda", fillcolor="#ffe6d9", color="#ec7211"];
+    endpoint [label="Interface endpoint\n(private access)", fillcolor="#f2f3f3"];
+  }
+
+  subgraph cluster_aoss {
+    label="Amazon OpenSearch Serverless (vector search collection)"; style="rounded"; color="#0972d3"; fontsize=11;
+    index    [label="Products index\n165k documents\nTitan vectors", fillcolor="#dbeafe", color="#0972d3"];
+    pipeline [label="Hybrid search pipeline\nBM25 + k-NN, fused,\nprice filter inside", fillcolor="#dbeafe", color="#0972d3"];
+    connector [label="ML connectors\nembeddings, rerank", fillcolor="#dbeafe", color="#0972d3"];
+  }
+
+  memory [label="Amazon OpenSearch Memory\none space, one actor per shopper\nextracted facts + the budget", fillcolor="#ffe6d9", color="#ec7211"];
+
+  subgraph cluster_bedrock {
+    label="Amazon Bedrock"; style="rounded,dashed"; color="#8b93a1"; fontsize=11;
+    haiku  [label="Claude Haiku 4.5\nagent turns", fillcolor="#ffffff"];
+    titan  [label="Titan Text\nEmbeddings v2", fillcolor="#ffffff"];
+    rerank [label="Cohere Rerank 3.5", fillcolor="#ffffff"];
+  }
+
+  inventory [label="Inventory MCP server\n(optional, AgentCore Gateway)", style="rounded,dashed", fillcolor="#ffffff"];
+
+  shopper -> app [label="question"];
+  app -> runtime [label="v2 / v3"];
+  app -> endpoint [label="v0 / v1\nsearch"];
+  app -> memory [label="recall / store\n(actorId set by the app)", color="#ec7211", fontcolor="#ec7211"];
+  runtime -> endpoint [label="search"];
+  runtime -> haiku;
+  runtime -> inventory [style=dashed, label="MCP"];
+  client -> gateway [label="MCP\nCognito token"];
+  gateway -> lambda;
+  lambda -> endpoint;
+  endpoint -> pipeline;
+  pipeline -> index;
+  index -> connector [style=invis];
+  pipeline -> connector [style=dashed, label="embed / rerank"];
+  connector -> titan [style=dashed];
+  connector -> rerank [style=dashed];
+}

@@ -1,0 +1,306 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Synthetic inventory tools behind an Amazon Bedrock AgentCore Gateway (MCP endpoint, Cognito JWT
+  inbound auth, Lambda target invoked by the Gateway's service role). Optional; delete the stack to remove it.
+  No Lambda resource policy and no public principal.
+
+Parameters:
+  ProjectTag:
+    Type: String
+    Default: sample-agent-ret
+  TargetName:
+    Type: String
+    Default: inventory
+    Description: Gateway target name; the Gateway exposes tools as <TargetName>___<tool>
+
+Resources:
+  # --- Inbound auth: Cognito user pool, client-credentials grant (machine to machine, no users) ---------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-pool"
+      AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}
+      UserPoolTags: {project: !Ref ProjectTag}
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "${AWS::StackName}-${AWS::AccountId}"
+
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: inventory
+      Name: Inventory tools
+      Scopes:
+        - {ScopeName: invoke, ScopeDescription: Call the inventory tools}
+
+  AppClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${AWS::StackName}-connector"
+      GenerateSecret: true  # pragma: allowlist secret
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [inventory/invoke]
+      SupportedIdentityProviders: [COGNITO]
+      # 24 hours is the longest a Cognito access token can live; the runtime requests a new one when it needs it.
+      AccessTokenValidity: 24
+      TokenValidityUnits: {AccessToken: hours}
+
+  # --- The tools: a plain Lambda, invoked only by the Gateway's role (no resource policy at all) -----------------------
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref FunctionRoleDeadLetterPolicy
+      Tags:
+        - {Key: project, Value: !Ref ProjectTag}
+
+  FunctionRoleDeadLetterPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Lets the inventory function send failed asynchronous invocations to its dead-letter queue"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt FunctionDeadLetterQueue.Arn
+
+  FunctionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs  # encrypted at rest with the AWS-managed SQS key
+      MessageRetentionPeriod: 345600
+      Tags:
+        - {Key: project, Value: !Ref ProjectTag}
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: Sample log group holding one JSON line per call; the default CloudWatch Logs encryption is used
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log group holds one JSON line per call (tool name and outcome, no payloads); the default CloudWatch Logs encryption is used for the sample
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}"
+      RetentionInDays: 90
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Handles only synthetic data and needs no VPC resources; a VPC would add a NAT cost to a demo
+      checkov:
+        skip:
+          - id: CKV_AWS_117
+            comment: Handles only synthetic inventory data and needs no VPC resources; a VPC would add a NAT cost to a demo
+    Properties:
+      FunctionName: !Ref AWS::StackName
+      Description: Synthetic inventory tools (Gateway Lambda target) for the Sample demo
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt FunctionRole.Arn
+      # Failed asynchronous invocations land here. The Gateway calls the function synchronously, so nothing is expected in it.
+      DeadLetterConfig:
+        TargetArn: !GetAtt FunctionDeadLetterQueue.Arn
+      Timeout: 10
+      MemorySize: 128
+      ReservedConcurrentExecutions: 5
+      Tags:
+        - {Key: project, Value: !Ref ProjectTag}
+      Code:
+        ZipFile: |
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: Apache-2.0
+          """Synthetic warehouse data for the Sample inventory demo (shared by the inventory tools).
+
+          Deterministic from a hash of the product id. No `from __future__` import on purpose: infra/cloudformation/
+          inventory-gateway.yaml inlines this file and gateway_handler.py into one Lambda module. Standard library only.
+          """
+
+          import hashlib
+          import re
+
+          WAREHOUSES = ("Columbus, OH", "Reno, NV", "Allentown, PA", "Dallas, TX", "Atlanta, GA")
+          PRODUCT_ID = re.compile(r"^[A-Za-z0-9]{1,20}$")
+
+          # Hand-set for the demo story; everything else comes from the hash.
+          FIXED = {
+              "B07QRXG93G": {"in_stock": True, "quantity": 42, "warehouse": "Columbus, OH", "days": 2},   # MASSJOY T-rex bank
+              "B0778BMYZX": {"in_stock": False, "quantity": 0, "warehouse": "Reno, NV", "days": 21},      # WAIT FLY green dinosaur bank
+          }
+
+
+          def stock_record(product_id: str) -> dict:
+              """Deterministic synthetic stock for a product id (same id, same answer, every time)."""
+              pid = product_id.upper()
+              if pid in FIXED:
+                  return dict(FIXED[pid])
+              d = hashlib.sha256(pid.encode()).digest()
+              in_stock = d[0] % 5 != 0  # about 80 percent in stock
+              quantity = 1 + d[1] % 120 if in_stock else 0
+              days = (1 + d[2] % 5) if in_stock else (14 + d[2] % 15)
+              return {"in_stock": in_stock, "quantity": quantity, "warehouse": WAREHOUSES[d[3] % len(WAREHOUSES)], "days": days}
+
+
+          def check_stock(product_id: str) -> dict:
+              r = stock_record(product_id)
+              return {"product_id": product_id, "in_stock": r["in_stock"], "quantity": r["quantity"], "warehouse": r["warehouse"]}
+
+
+          def delivery_estimate(product_id: str) -> dict:
+              return {"product_id": product_id, "days": stock_record(product_id)["days"]}
+
+
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: Apache-2.0
+          """Inventory tools as an Amazon Bedrock AgentCore Gateway Lambda target .
+
+          The Gateway speaks MCP to the caller and invokes this function once per tool call, using its own service role (so
+          the function has no public resource policy). Contract: the event is the tool's arguments (a JSON object); the tool
+          name is in context.client_context.custom["bedrockAgentCoreToolName"], possibly prefixed "<target>___<tool>".
+          The return value becomes the tool result. Synthetic data only; see inventory_data.py. Standard library only.
+          """
+
+          import json
+
+
+          IMPLEMENTATIONS = {"check_stock": check_stock, "delivery_estimate": delivery_estimate}
+          SEPARATOR = "___"
+
+
+          def tool_name(context) -> str:
+              """The tool the Gateway is calling, without the target-name prefix. Empty string if it cannot be found."""
+              custom = getattr(getattr(context, "client_context", None), "custom", None) or {}
+              name = custom.get("bedrockAgentCoreToolName") or ""
+              return name.split(SEPARATOR, 1)[1] if SEPARATOR in name else name
+
+
+          def lambda_handler(event, context=None):
+              name = tool_name(context)
+              fn = IMPLEMENTATIONS.get(name)
+              # One line per call: the tool and its outcome. No arguments beyond the (synthetic) product id, no credentials.
+              pid = event.get("product_id") if isinstance(event, dict) else None
+              print(json.dumps({"tool": name[:40], "known": fn is not None, "valid_id": isinstance(pid, str) and bool(PRODUCT_ID.match(pid))}))
+              if fn is None:
+                  return {"error": f"unknown tool: {name[:40]}"}
+              if not isinstance(pid, str) or not PRODUCT_ID.match(pid):
+                  return {"error": "product_id must be 1-20 letters or digits, for example B07QRXG93G"}
+              return fn(pid)
+
+  # --- The Gateway (MCP endpoint) and its service role: may invoke this one function and nothing else ---------------
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Service role of the inventory AgentCore Gateway
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: bedrock-agentcore.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {"aws:SourceAccount": !Ref "AWS::AccountId"}
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
+      ManagedPolicyArns:
+        - !Ref GatewayRolePolicy
+      Tags:
+        - {Key: project, Value: !Ref ProjectTag}
+
+
+  GatewayRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Permissions of GatewayRole (the inline policy invoke-inventory-function, now a managed policy)"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt Function.Arn
+
+  Gateway:
+    Type: AWS::BedrockAgentCore::Gateway
+    Properties:
+      Name: !Ref AWS::StackName
+      Description: Inventory tools (check_stock, delivery_estimate) for the Sample demo
+      ProtocolType: MCP
+      RoleArn: !GetAtt GatewayRole.Arn
+      AuthorizerType: CUSTOM_JWT
+      AuthorizerConfiguration:
+        CustomJWTAuthorizer:
+          DiscoveryUrl: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration"
+          AllowedClients: [!Ref AppClient]
+          AllowedScopes: [inventory/invoke]
+      Tags:
+        project: !Ref ProjectTag
+
+  GatewayTarget:
+    Type: AWS::BedrockAgentCore::GatewayTarget
+    Properties:
+      GatewayIdentifier: !GetAtt Gateway.GatewayIdentifier
+      Name: !Ref TargetName
+      Description: Warehouse stock and delivery estimates (synthetic data)
+      CredentialProviderConfigurations:
+        - CredentialProviderType: GATEWAY_IAM_ROLE
+      TargetConfiguration:
+        Mcp:
+          Lambda:
+            LambdaArn: !GetAtt Function.Arn
+            ToolSchema:
+              InlinePayload:
+                - Name: check_stock
+                  Description: >-
+                    Check warehouse stock for one product. Input: the catalog product_id (for example B07QRXG93G).
+                    Returns whether it is in stock, how many units and the warehouse.
+                  InputSchema:
+                    Type: object
+                    Required: [product_id]
+                    Properties:
+                      product_id: {Type: string, Description: "Catalog product id, letters and digits only"}
+                - Name: delivery_estimate
+                  Description: >-
+                    Estimate delivery time in days for one product. Input: the catalog product_id. Products that are
+                    out of stock get a restock-plus-shipping estimate.
+                  InputSchema:
+                    Type: object
+                    Required: [product_id]
+                    Properties:
+                      product_id: {Type: string, Description: "Catalog product id, letters and digits only"}
+
+Outputs:
+  GatewayUrl:
+    Description: MCP endpoint of the inventory tools.
+    Value: !GetAtt Gateway.GatewayUrl
+  UserPoolId:
+    Value: !Ref UserPool
+  AppClientId:
+    Value: !Ref AppClient
+  TokenEndpoint:
+    Description: OAuth token endpoint (client-credentials grant).
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+  FunctionName:
+    Value: !Ref Function
