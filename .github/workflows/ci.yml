@@ -44,6 +44,7 @@ jobs:
       - name: cfn_nag
         run: |
           gem install cfn-nag -v 0.8.10 --no-document
+          export PATH="$(ruby -e 'puts Gem.user_dir')/bin:$PATH"  # the runner installs gems in the user directory
           for template in infra/serverless/*.yaml infra/cloudformation/*.yaml; do
             cfn_nag_scan --input-path "$template" --fail-on-warnings
           done
